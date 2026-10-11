@@ -1,0 +1,84 @@
+name: Publish v1.0 release (one-time bootstrap)
+
+# The GitHub API tools used to create this repo can only upload text files,
+# so the signed APK (built and signed locally, versionCode 1) and the binary parts of the
+# Android project (launcher icons, gradle-wrapper.jar) were uploaded as base64.
+# This workflow decodes them, verifies SHA-256, creates Release v1.0 with the APK,
+# commits the binary Android files, removes the payload and publishes gh-pages.
+# It does NOT build or sign anything.
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/bootstrap/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decode and verify payload
+        run: |
+          set -euo pipefail
+          test -f .github/bootstrap/korona-stikhiy.apk.b64 || { echo "payload already processed"; exit 0; }
+          mkdir -p /tmp/p
+          base64 -d .github/bootstrap/korona-stikhiy.apk.b64 > /tmp/p/korona-stikhiy.apk
+          echo "$(cat .github/bootstrap/korona-stikhiy.apk.sha256)  /tmp/p/korona-stikhiy.apk" | sha256sum -c -
+          echo "44f7fa08807dfeaef35a307bfad110694525928c5c25f009b4d8958a6d9b54b0  /tmp/p/korona-stikhiy.apk" | sha256sum -c -
+          base64 -d .github/bootstrap/android-binaries.tgz.b64 > /tmp/p/bin.tgz
+          echo "$(cat .github/bootstrap/android-binaries.tgz.sha256)  /tmp/p/bin.tgz" | sha256sum -c -
+          echo "7ef9c00fe401c575f95c9d04875a1f13abc30b24e8044df0703b385c026335c3  /tmp/p/bin.tgz" | sha256sum -c -
+          tar tzf /tmp/p/bin.tgz | grep -vE '^(app/src/main/res/mipmap-[a-z]+/ic_launcher[a-z_]*\.png|gradle/wrapper/gradle-wrapper\.jar)$' && { echo "unexpected file in archive"; exit 1; } || true
+          ls -l /tmp/p
+
+      - name: Create release v1.0 with APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -f /tmp/p/korona-stikhiy.apk || exit 0
+          gh release view v1.0 >/dev/null 2>&1 && { echo "release exists"; exit 0; }
+          cat > /tmp/notes.md <<'NOTES'
+          «Корона Стихий» 1.0 — первая версия карточной стратегии в реальном времени.
+
+          - Бои 1 на 1 против бота: 3 минуты + овертайм, мана до 10 (×2 в последнюю минуту и в овертайме), по 3 башни у каждой стороны, короны 0–3.
+          - 21 оригинальная карта: войска (ближний/дальний бой, рой, наземные/летающие), здания и заклинания; 4 редкости.
+          - Колода из 8 карт, в руке 4 + следующая; карту можно перетащить или нажать карту, а затем место на поле.
+          - Кубки и 6 арен, сложность бота растёт с кубками.
+          - Сундуки за победы (от мгновенных до 2 минут), коллекция, улучшения карт до 10 уровня за золото и дубликаты, редактор колоды, профиль с ником и аватаром.
+          - Работает без интернета, прогресс хранится на устройстве.
+
+          Android 7.0+, пакет com.luntikvisuals.koronastikhiy, versionCode 1, портретная ориентация.
+          SHA-256: 44f7fa08807dfeaef35a307bfad110694525928c5c25f009b4d8958a6d9b54b0
+          NOTES
+          sed -i 's/^          //' /tmp/notes.md
+          gh release create v1.0 /tmp/p/korona-stikhiy.apk --target main --latest --title "Корона Стихий v1.0" --notes-file /tmp/notes.md
+
+      - name: Add Android binaries, remove payload, publish gh-pages
+        run: |
+          set -euo pipefail
+          test -f /tmp/p/korona-stikhiy.apk || exit 0
+          tar xzf /tmp/p/bin.tgz -C android
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android
+          git rm -q -r .github/bootstrap
+          git commit -m "Add Android launcher icons and gradle wrapper jar; remove v1.0 bootstrap payload (APK published in Release v1.0)"
+          git push origin HEAD:main
+          git push origin HEAD:gh-pages
+
+      - name: Enable / rebuild GitHub Pages
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/pages" -f "source[branch]=gh-pages" -f "source[path]=/" || echo "Pages site create not permitted or already exists"
+          gh api -X POST "repos/${{ github.repository }}/pages/builds" || echo "Pages rebuild request not permitted; the push to gh-pages should trigger it."
